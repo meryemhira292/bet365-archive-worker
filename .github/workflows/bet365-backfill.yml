@@ -35,4 +35,4 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           MAX_RUNTIME_SECONDS: "20400"
           HIST_INTERVAL_SECONDS: "5.05"
-        run: python bet365_backfill.py
+        run: python bet365_backfill-1.py
