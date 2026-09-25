@@ -1,0 +1,38 @@
+name: Bet365 2026 Fast Backfill
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 0,6,12,18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bet365-2026-fast-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests "psycopg[binary]"
+
+      - name: Continue Bet365 archive
+        env:
+          ODDSPAPI_API_KEY: ${{ secrets.ODDSPAPI_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MAX_RUNTIME_SECONDS: "20400"
+          HIST_INTERVAL_SECONDS: "5.05"
+        run: python bet365_backfill.py
