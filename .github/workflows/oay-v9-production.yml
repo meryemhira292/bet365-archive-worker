@@ -1,0 +1,123 @@
+name: OAY V9 Private Exact Production
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Repeats hourly in UTC. Delayed GitHub scheduling is possible.
+    - cron: "7 * * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: oay-v9-private-exact
+  cancel-in-progress: false
+
+jobs:
+  exact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+    env:
+      OAY_AES256_KEY_B64: ${{ secrets.OAY_AES256_KEY_B64 }}
+      GH_TOKEN: ${{ github.token }}
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install exact dependencies
+        run: python -m pip install 'numpy>=2,<2.3' 'numba>=0.61,<0.65' 'cryptography>=45,<47'
+      - name: Decrypt private canonical training and unseen candidate queue
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64,glob,hashlib,io,json,os,pathlib,zipfile
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          key=os.getenv('OAY_AES256_KEY_B64','')
+          files=sorted(glob.glob('oay/private_payload.part*'))
+          if not key or not files:raise SystemExit('Missing key or encrypted input parts; cannot run exact')
+          key=base64.b64decode(key,validate=True)
+          if len(key)!=32:raise SystemExit('AES256 key length invalid')
+          blob=b''.join(open(f,'rb').read() for f in files)
+          plain=AESGCM(key).decrypt(blob[:12],blob[12:],None)
+          root=pathlib.Path('private');root.mkdir(exist_ok=True)
+          with zipfile.ZipFile(io.BytesIO(plain)) as z:
+            for n in z.namelist():
+              p=pathlib.PurePosixPath(n)
+              if p.is_absolute() or '..' in p.parts:raise ValueError('Invalid path in bundle')
+            manifest=json.loads(z.read('BUNDLE_MANIFEST_SHA256.json'))
+            for n,digest in manifest.items():
+              if hashlib.sha256(z.read(n)).hexdigest()!=digest:raise ValueError('Bundle SHA mismatch '+n)
+            z.extractall(root)
+          print('Private input verified; sealed 2026 holdout was not in input bundle')
+          PY
+      - name: Restore last encrypted checkpoint
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64,hashlib,io,json,os,pathlib,urllib.request,zipfile
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=pathlib.Path('private');gate=root/'GATE.zip';state_dir=root/'checkpoints';state_dir.mkdir(exist_ok=True)
+          key=base64.b64decode(os.environ['OAY_AES256_KEY_B64']);token=os.environ['GH_TOKEN']
+          repo=os.environ['GITHUB_REPOSITORY'];api='https://api.github.com/repos/'+repo
+          def get(url):
+            req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
+            with urllib.request.urlopen(req,timeout=90) as f:return f.read()
+          arts=[]
+          for page in (1,2,3):
+            data=json.loads(get(api+'/actions/artifacts?per_page=100&page='+str(page)))
+            arts.extend(x for x in data.get('artifacts',[]) if x['name'].startswith('oay-v9-state-') and not x['expired'])
+            if len(data.get('artifacts',[]))<100:break
+          arts.sort(key=lambda a:a['created_at'],reverse=True)
+          if not arts:
+            print('No prior cloud checkpoint; starting from independently verified seed')
+          else:
+            outer=zipfile.ZipFile(io.BytesIO(get(api+'/actions/artifacts/'+str(arts[0]['id'])+'/zip')))
+            cipher=outer.read('state.enc')
+            plain=AESGCM(key).decrypt(cipher[:12],cipher[12:],None)
+            z=zipfile.ZipFile(io.BytesIO(plain))
+            state=json.loads(z.read('STATE.json'))
+            checkpoint_name=state['current']
+            if pathlib.PurePosixPath(checkpoint_name).name!=checkpoint_name:raise ValueError('Bad checkpoint name')
+            if state['gate_sha256']!=hashlib.sha256(gate.read_bytes()).hexdigest():raise ValueError('Previous checkpoint gate does not match, refusing reset')
+            checkpoint=z.read(checkpoint_name)
+            if hashlib.sha256(checkpoint).hexdigest()!=state['current_sha256']:raise ValueError('Previous checkpoint SHA mismatch')
+            with zipfile.ZipFile(root/'SEED.zip') as seed:
+              seed_count=json.loads(seed.read('EXACT_REPORT.json'))['total_exact']
+            if state['exact_completed']>=seed_count:
+              (state_dir/'STATE.json').write_bytes(z.read('STATE.json'))
+              (state_dir/checkpoint_name).write_bytes(checkpoint)
+              print('Restored verified encrypted checkpoint, completed:',state['exact_completed'])
+            else:print('Seed is newer than stored cloud state; using seed')
+          PY
+      - name: Run exact research with atomic checkpoints
+        shell: bash
+        run: |
+          cd private
+          python production_runner.py --train TRAIN_2018_2025.npz --gate GATE.zip --seed SEED.zip --outdir checkpoints --workers 4 --block 5000 --seconds 3150
+      - name: Encrypt checkpoint before GitHub artifact upload
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64,io,os,pathlib,secrets,zipfile,json
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=pathlib.Path('private/checkpoints');state=json.loads((root/'STATE.json').read_text())
+          buf=io.BytesIO()
+          with zipfile.ZipFile(buf,'w',compression=zipfile.ZIP_STORED) as z:
+            z.write(root/'STATE.json','STATE.json');z.write(root/state['current'],state['current'])
+          key=base64.b64decode(os.environ['OAY_AES256_KEY_B64'])
+          nonce=secrets.token_bytes(12)
+          pathlib.Path('state.enc').write_bytes(nonce+AESGCM(key).encrypt(nonce,buf.getvalue(),None))
+          print('Checkpoint encrypted, total exact:',state['exact_completed'])
+          PY
+      - name: Retain encrypted output only
+        uses: actions/upload-artifact@v4
+        with:
+          name: oay-v9-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: state.enc
+          retention-days: 90
+          if-no-files-found: error
