@@ -1,0 +1,65 @@
+name: OAY Hybrid Bulk Publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract encrypted packets
+        run: |
+          python - <<'PY'
+          import zipfile, pathlib, json, hashlib
+
+          src = "OAY_HIBRIT_SIFRELI_AKTARIM.zip"
+          dest = pathlib.Path("oay/hybrid_inbox")
+          dest.mkdir(parents=True, exist_ok=True)
+
+          with zipfile.ZipFile(src) as z:
+              names = [
+                  n for n in z.namelist()
+                  if n.startswith("packets/")
+                  and n.endswith(".json")
+              ]
+              if not names:
+                  raise RuntimeError("No encrypted packets")
+
+              added = 0
+              for name in sorted(names):
+                  if len(pathlib.PurePosixPath(name).parts) != 2:
+                      raise RuntimeError("Invalid packet path")
+
+                  data = z.read(name)
+                  packet = json.loads(data)
+
+                  if packet.get("schema") != "oay-hybrid-inbox-v1":
+                      raise RuntimeError("Invalid packet schema")
+
+                  target = dest / pathlib.Path(name).name
+
+                  if target.exists():
+                      if hashlib.sha256(target.read_bytes()).digest() != hashlib.sha256(data).digest():
+                          raise RuntimeError("Existing packet differs")
+                      continue
+
+                  target.write_bytes(data)
+                  added += 1
+
+              print("New encrypted packets:", added)
+          PY
+
+      - name: Publish encrypted packets
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add oay/hybrid_inbox/
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish encrypted OAY hybrid packets"
+            git push
+          fi
