@@ -3,7 +3,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - oay/hybrid-exact-ingest-20261011
+      - main
+    paths:
+      - '.github/workflows/oay-hybrid-exact.yml'
+      - 'oay/hybrid_inbox/**'
+      - 'oay/hybrid_bridge.py'
+      - 'oay/hybrid_exact_worker.py'
   schedule:
     - cron: "43 * * * *"
 
