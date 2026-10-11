@@ -1,6 +1,9 @@
 name: OAY V9 Hybrid Private Exact
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - oay/hybrid-exact-ingest-20261011
   schedule:
     - cron: "43 * * * *"
 
@@ -29,6 +32,10 @@ jobs:
           python-version: '3.12'
       - name: Install private exact dependencies
         run: python -m pip install 'numpy>=2,<2.3' 'numba>=0.61,<0.65' 'cryptography>=45,<47'
+      - name: Verify bridge source and synthetic encrypted roundtrip
+        run: |
+          python -m py_compile oay/hybrid_bridge.py oay/hybrid_exact_worker.py oay/test_hybrid_bridge.py
+          python oay/test_hybrid_bridge.py
       - name: Decrypt the unchanged canonical private exact engine
         shell: bash
         run: |
