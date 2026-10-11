@@ -174,12 +174,12 @@ def main():
     seed.write_bytes(pack({"EXACT_RESULTS.jsonl": line_bytes(results), "EXACT_REPORT.json": seed_report}))
     if len(results) < len(queue):
         subprocess.run([
-            sys.executable, str(ROOT / "production_runner.py"),
-            "--train", str(ROOT / "TRAIN_2018_2025.npz"),
-            "--gate", str(gate), "--seed", str(seed),
-            "--outdir", str(ROOT / "hybrid_checkpoints"),
+            sys.executable, "production_runner.py",
+            "--train", "TRAIN_2018_2025.npz",
+            "--gate", "HYBRID_GATE.zip", "--seed", "HYBRID_SEED.zip",
+            "--outdir", "hybrid_checkpoints",
             "--workers", "4", "--block", "5000", "--seconds", "2850"
-        ], check=True)
+        ], check=True, cwd=str(ROOT))
         state_path = ROOT / "hybrid_checkpoints" / "STATE.json"
         if state_path.is_file():
             run_state = json.loads(state_path.read_text())
